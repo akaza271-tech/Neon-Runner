@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Neon Runner | Elite 500</title>
+    <style>
+        :root { --primary: #00f2ff; --accent: #ff007b; --power: #ffff00; --warning: #ffae00; --bg: #070a13; }
+        * { touch-action: none; user-select: none; box-sizing: border-box; }
+        body { margin: 0; background: var(--bg); font-family: 'Inter', sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; overflow: hidden; }
+        
+        /* Shake Animation */
+        @keyframes shake {
+            0% { transform: translate(1px, 1px); }
+            20% { transform: translate(-2px, 0px); }
+            40% { transform: translate(2px, 1px); }
+            60% { transform: translate(-1px, -1px); }
+            80% { transform: translate(1px, 1px); }
+            100% { transform: translate(0, 0); }
+        }
+        .shaking { animation: shake 0.3s; }
+
+        #gameWrapper { position: relative; width: 100%; max-width: 360px; height: 100vh; max-height: 640px; background: #000; border: 2px solid #1e293b; border-radius: 20px; overflow: hidden; }
+        canvas { display: block; width: 100%; height: 100%; }
+        
+        .top-hud { position: absolute; top: 20px; left: 0; width: 100%; display: flex; justify-content: space-around; pointer-events: none; z-index: 10; }
+        .stat-box { background: rgba(30, 41, 59, 0.7); padding: 8px 15px; border-radius: 12px; text-align: center; backdrop-filter: blur(5px); border: 1px solid rgba(255,255,255,0.1); }
+        .stat-label { font-size: 10px; text-transform: uppercase; color: #94a3b8; display: block; }
+        .stat-value { font-size: 18px; font-weight: 800; color: white; }
+
+        #ghostTimerText { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); font-size: 80px; font-weight: 900; color: var(--power); text-shadow: 0 0 20px var(--power); display: none; opacity: 0.5; pointer-events: none; z-index: 15; }
+        #powerTimer { position: absolute; bottom: 30px; left: 50%; transform: translateX(-50%); width: 200px; height: 6px; background: rgba(255,255,255,0.1); border-radius: 10px; display: none; overflow: hidden; z-index: 15; }
+        #powerProgress { width: 100%; height: 100%; background: var(--power); }
+        
+        #warningLabel { position: absolute; top: 120px; left: 0; width: 100%; color: var(--warning); font-weight: 900; text-align: center; font-size: 1.5rem; display: none; text-shadow: 0 0 10px var(--warning); animation: blink 0.2s infinite; }
+        @keyframes blink { 0% {opacity: 1;} 50% {opacity: 0.2;} 100% {opacity: 1;} }
+
+        .overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(7, 10, 19, 0.95); display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 20; text-align: center; padding: 20px; }
+        .lvl-btn { width: 180px; padding: 12px; margin: 5px; border: 2px solid var(--primary); background: transparent; color: var(--primary); border-radius: 10px; font-weight: 800; cursor: pointer; text-transform: uppercase; }
+        .lvl-btn:hover { background: var(--primary); color: #000; }
+    </style>
+</head>
+<body>
+
+<div id="gameWrapper">
+    <div id="warningLabel">JUMP NOW!</div>
+    <div id="ghostTimerText">5</div>
+    <div class="top-hud">
+        <div class="stat-box"><span class="stat-label">Score</span><span id="scoreVal" class="stat-value">0</span></div>
+        <div class="stat-box"><span class="stat-label">Best</span><span id="hiScoreVal" class="stat-value">0</span></div>
+    </div>
+    <div id="powerTimer"><div id="powerProgress"></div></div>
+    <canvas id="gameCanvas" width="360" height="600"></canvas>
+    
+    <div id="startScreen" class="overlay">
+        <h1 style="color: var(--primary); margin:0;">NEON RUNNER</h1>
+        <p style="color: #64748b; margin-bottom: 20px;">Elite Power: Spawn every 500 points!</p>
+        <button class="lvl-btn" onclick="startGame('noob')">Noob</button>
+        <button class="lvl-btn" onclick="startGame('medium')">Medium</button>
+        <button class="lvl-btn" onclick="startGame('pro')">Pro</button>
+    </div>
+
+    <div id="gameOverScreen" class="overlay" style="display: none;">
+        <h1 style="color: var(--accent);">CRASHED</h1>
+        <p id="finalScoreMsg" style="color: white; margin: 15px; font-size: 1.1rem;"></p>
+        <button class="lvl-btn" onclick="location.reload()">Restart</button>
+    </div>
+</div>
+
+<script>
+    const canvas = document.getElementById('gameCanvas'), ctx = canvas.getContext('2d');
+    const wrapper = document.getElementById('gameWrapper');
+    const scoreVal = document.getElementById('scoreVal'), hiScoreVal = document.getElementById('hiScoreVal');
+    const powerBar = document.getElementById('powerTimer'), powerProgress = document.getElementById('powerProgress');
+    const ghostTimerText = document.getElementById('ghostTimerText'), warningLabel = document.getElementById('warningLabel');
+
+    let gameActive = false, score = 0, lastPowerScore = 0, speed = 6, laneWidth = 120, currentDifficulty = 'medium';
+    let hiScore = localStorage.getItem('runnerHiScore') || 0;
+    hiScoreVal.innerText = hiScore;
+
+    let player = { lane: 1, y: 400, targetX: 180, currentX: 180, jumpY: 0, isJumping: false, jumpPower: 0, isGhost: false, ghostTime: 0 };
+    let obstacles = [], powerups = [];
+
+    const diffSettings = {
+        noob: { startSpeed: 4, sizeMult: 1, speedInc: 0.02, tripleChance: 0.005 },
+        medium: { startSpeed: 6.5, sizeMult: 0.85, speedInc: 0.04, tripleChance: 0.015 },
+        pro: { startSpeed: 9, sizeMult: 0.7, speedInc: 0.06, tripleChance: 0.03 }
+    };
+
+    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    function playSound(freq, type, duration, vol) {
+        if(audioCtx.state === 'suspended') return;
+        const osc = audioCtx.createOscillator(), gain = audioCtx.createGain();
+        osc.type = type; osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+        gain.gain.setValueAtTime(vol, audioCtx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + duration);
+        osc.connect(gain); gain.connect(audioCtx.destination);
+        osc.start(); osc.stop(audioCtx.currentTime + duration);
+    }
+
+    let tStartX = 0, tStartY = 0;
+    window.addEventListener('touchstart', e => { tStartX = e.touches[0].clientX; tStartY = e.touches[0].clientY; if(audioCtx.state === 'suspended') audioCtx.resume(); });
+    window.addEventListener('touchend', e => {
+        let dx = e.changedTouches[0].clientX - tStartX, dy = e.changedTouches[0].clientY - tStartY;
+        if (Math.abs(dx) > Math.abs(dy)) { if (dx > 40) moveR(); else if (dx < -40) moveL(); }
+        else { if (dy < -40) doJump(); }
+    });
+    window.addEventListener('keydown', e => {
+        if(audioCtx.state === 'suspended') audioCtx.resume();
+        if (e.key === 'ArrowLeft') moveL(); if (e.key === 'ArrowRight') moveR(); if (e.key === 'ArrowUp' || e.key === ' ') doJump();
+    });
+
+    function moveL() { if(gameActive && player.lane > 0) { player.lane--; playSound(400, 'triangle', 0.1, 0.1); } }
+    function moveR() { if(gameActive && player.lane < 2) { player.lane++; playSound(400, 'triangle', 0.1, 0.1); } }
+    function doJump() { if(gameActive && !player.isJumping) { player.isJumping = true; player.jumpPower = 18; playSound(600, 'sine', 0.3, 0.2); } }
+
+    function startGame(difficulty) {
+        currentDifficulty = difficulty;
+        score = 0; lastPowerScore = 0; speed = diffSettings[difficulty].startSpeed;
+        obstacles = []; powerups = [];
+        player.lane = 1; player.currentX = 180; player.jumpY = 0; player.isGhost = false;
+        scoreVal.innerText = '0'; gameActive = true;
+        document.getElementById('startScreen').style.display = 'none';
+        update();
+    }
+
+    function update() {
+        if (!gameActive) return;
+        const config = diffSettings[currentDifficulty];
+
+        player.targetX = (player.lane * laneWidth) + 60;
+        player.currentX += (player.targetX - player.currentX) * 0.18;
+
+        if (player.isJumping) {
+            player.jumpY += player.jumpPower; player.jumpPower -= 0.95;
+            if (player.jumpY <= 0) { player.jumpY = 0; player.isJumping = false; }
+        }
+
+        if (player.isGhost) {
+            player.ghostTime -= 16;
+            let secondsLeft = Math.ceil(player.ghostTime / 1000);
+            if (ghostTimerText.innerText != secondsLeft && secondsLeft >= 0) playSound(1200, 'sine', 0.05, 0.05);
+            ghostTimerText.innerText = secondsLeft;
+            ghostTimerText.style.display = 'block';
+            powerProgress.style.width = (player.ghostTime / 5000 * 100) + "%";
+            if (player.ghostTime <= 0) { player.isGhost = false; powerBar.style.display = 'none'; ghostTimerText.style.display = 'none'; }
+        }
+
+        // --- ELITE POWER SPAWN (EVERY 500) ---
+        if (score > 0 && score % 500 === 0 && score !== lastPowerScore) {
+            powerups.push({ lane: Math.floor(Math.random() * 3), y: -50 });
+            lastPowerScore = score;
+            playSound(1500, 'sine', 0.4, 0.2);
+        }
+
+        if (Math.random() < 0.04) {
+            if (Math.random() < config.tripleChance) {
+                obstacles.push({ type: 'triple', y: -100, w: 340, h: 30 });
+                warningLabel.style.display = 'block'; 
+                wrapper.classList.add('shaking'); // Screen Shake
+                playSound(200, 'square', 0.5, 0.1);
+                setTimeout(() => { warningLabel.style.display = 'none'; wrapper.classList.remove('shaking'); }, 800);
+            } else {
+                obstacles.push({ type: 'single', lane: Math.floor(Math.random() * 3), y: -100, w: 75 * config.sizeMult, h: 40 * config.sizeMult });
+            }
+        }
+
+        powerups.forEach((p, i) => {
+            p.y += speed;
+            if (Math.abs(player.currentX - (p.lane * laneWidth + 60)) < 45 && Math.abs(player.y - p.y) < 45) {
+                powerups.splice(i, 1); player.isGhost = true; player.ghostTime = 5000; 
+                powerBar.style.display = 'block'; playSound(1000, 'sine', 0.5, 0.2);
+            }
+        });
+
+        obstacles.forEach((obs, i) => {
+            obs.y += speed;
+            let hit = false;
+            if (obs.type === 'triple') { if (Math.abs(player.y - obs.y) < 30 && player.jumpY < 40) hit = true; }
+            else { const midX = (obs.lane * laneWidth) + 60; if (Math.abs(player.currentX - midX) < (obs.w/2 + 15) && Math.abs(player.y - obs.y) < (obs.h/2 + 15) && player.jumpY < 30) hit = true; }
+            
+            if (hit && !player.isGhost) endGame();
+            if (obs.y > 700) { obstacles.splice(i, 1); score += 10; scoreVal.innerText = score; speed += config.speedInc; }
+        });
+
+        draw();
+        requestAnimationFrame(update);
+    }
+
+    function draw() {
+        ctx.fillStyle = '#070a13'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.strokeStyle = '#1e293b'; ctx.lineWidth = 3;
+        for (let i = 1; i < 3; i++) { ctx.beginPath(); ctx.moveTo(i * laneWidth, 0); ctx.lineTo(i * laneWidth, canvas.height); ctx.stroke(); }
+        
+        ctx.fillStyle = player.isGhost ? 'rgba(255,255,0,0.2)' : 'rgba(0,242,255,0.3)';
+        ctx.beginPath(); ctx.ellipse(player.currentX, player.y + 20, 30, 8, 0, 0, Math.PI*2); ctx.fill();
+
+        powerups.forEach(p => {
+            ctx.fillStyle = '#ffff00'; ctx.shadowBlur = 25; ctx.shadowColor = '#ffff00';
+            ctx.beginPath(); ctx.arc(p.lane * laneWidth + 60, p.y, 20, 0, Math.PI * 2); ctx.fill();
+            ctx.shadowBlur = 0;
+        });
+
+        obstacles.forEach(obs => {
+            ctx.fillStyle = obs.type === 'triple' ? '#ffae00' : '#ff007b';
+            ctx.shadowBlur = 15; ctx.shadowColor = ctx.fillStyle;
+            if (obs.type === 'triple') ctx.fillRect(10, obs.y, obs.w, obs.h);
+            else ctx.fillRect(obs.lane * laneWidth + (laneWidth-obs.w)/2, obs.y, obs.w, obs.h);
+        });
+
+        const dS = 44 + (player.jumpY * 0.3); ctx.globalAlpha = player.isGhost ? 0.4 : 1.0;
+        ctx.fillStyle = player.isGhost ? '#ffff00' : '#00f2ff';
+        ctx.shadowColor = ctx.fillStyle; ctx.fillRect(player.currentX - dS/2, player.y - dS/2 - player.jumpY, dS, dS);
+        ctx.globalAlpha = 1.0; ctx.shadowBlur = 0;
+    }
+
+    function endGame() {
+        gameActive = false; playSound(100, 'sawtooth', 0.5, 0.3);
+        if (score > hiScore) { hiScore = score; localStorage.setItem('runnerHiScore', hiScore); }
+        document.getElementById('finalScoreMsg').innerText = "Score: " + score + "\nBest: " + hiScore;
+        document.getElementById('gameOverScreen').style.display = 'flex';
+        ghostTimerText.style.display = 'none'; powerBar.style.display = 'none';
+        wrapper.classList.remove('shaking');
+    }
+</script>
+</body>
+</html>
